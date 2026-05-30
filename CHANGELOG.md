@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.2.1 — 2026-05-30
+
+### 修复（预先存在的解析 Bug，非 v3.2 引入）
+- **§5.1 东财个股新闻 `eastmoney_stock_news`**：东财实际返回里 `result.cmsArticleWebOld` **直接就是文章列表**（非 `{list:[...]}` 嵌套），旧写法 `.get("cmsArticleWebOld", {}).get("list", [])` 对 list 调用 `.get` 触发 `AttributeError` / 返回空 → 改为遍历 `d.get("result", {}).get("cmsArticleWebOld", []) or []`。
+- **§6.4 新浪财报三表 `sina_financial_report`**：新浪实际结构是 `result.data.report_list`（按报告期如 `'20260331'` 为键的 dict，每期对象的 `data` 字段才是行项列表 `[{item_title, item_value, item_tongbi}]`），旧写法取 `result.data.{report_type}` **永久返回空** → 改为遍历 `report_list` 期次（倒序），每期从 `data` 按 `item_title` 提取，返回「按报告期记录列表」（`{"报告期": ..., "<科目>": <值>, "<科目>_同比": <同比>}`）。新增 `num` 参数（默认 8 期）。
+
+### 测试
+- 两函数用真实公开 API（茅台 600519，零 key）实测：个股新闻返回 20 条、字段（date/title/content/mediaName/url）齐全；财报三表 lrb/fzb/llb 各返回 8 期、净利润+同比可取。
+- 验证方式：exec SKILL.md 代码块本身（含 `em_get` 助手）直连真实 API 断言非空。
+
+### 说明
+- 端点数（27）、数据源数不变；修复来自姊妹项目 astock-peg 移植时实测发现并验证的正确修法。
+
 ## v3.2 — 2026-05-30
 
 ### 新增（数据源优先级 + 东财防封）

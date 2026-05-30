@@ -2,17 +2,22 @@
 name: a-stock-data
 description: A股全栈数据工具包 — 覆盖行情(mootdx+腾讯+百度K线)、研报(东财+同花顺+iwencai)、信号(同花顺热点+北向+龙虎榜+解禁+行业)、资金面(融资融券+大宗交易+股东户数+分红+资金流分钟级+资金流120日)、新闻(东财个股+全球资讯)、基础数据(mootdx财务/F10+东财+新浪三表)、公告(巨潮)七层数据源，内嵌全部调用代码，自包含零依赖外部文件。优先用通达信(mootdx)/腾讯(不封IP)，东财接口已内置限流防封。适用于个股估值、研报检索、题材归因、龙虎榜跟踪、解禁预警、行业轮动、融资融券跟踪、筹码分析、产业链调研、批量筛选等场景。
 origin: custom
-version: 3.2
+version: 3.2.1
 ---
 
 > 📦 项目主页：https://github.com/simonlin1212/a-stock-data — 更新、反馈、支持作者
 > 
 > 作者：Simon 林 · 抖音「Simon林」· 公众号「硅基世纪」
 
-# A股全栈数据工具包 V3.2
+# A股全栈数据工具包 V3.2.1
 
 七层数据架构，27 个端点实测可用（2026-05 验证；财联社快讯已下线，详见 §5.2），覆盖主板/中小板/科创板/ST。
 
+> **V3.2.1（Bug 修复）：** 修复两个内嵌函数的解析逻辑（预先存在，非 V3.2 引入）——
+> - **§5.1 东财个股新闻**：东财实际返回里 `result.cmsArticleWebOld` 直接就是文章列表，旧写法对 list 调 `.get("list")` 触发 AttributeError / 返回空 → 改为遍历 `cmsArticleWebOld` 列表本身。
+> - **§6.4 新浪财报三表**：新浪实际结构是 `result.data.report_list`（按报告期为键的 dict，每期 `data` 才是行项列表），旧写法取 `result.data.{lrb}` 永久返回空 → 改为遍历 `report_list` 期次、从每期 `data` 按 `item_title` 提取。
+> - 两函数均用茅台 600519 公开 API（零 key）实测返回非空、字段正确。
+>
 > **V3.2（防封 + 失效修复）：**
 > - **数据源优先级 + 东财防封**：明确「通达信(mootdx)/腾讯不封IP 优先用，东财仅用于其独有数据」原则；新增统一节流入口 `em_get()`，所有东财接口内置串行限流（间隔≥1s+随机抖动）+ 会话复用，AI 抄代码即自带防封。详见「数据源优先级 & 东财防封」章节。
 > - **财联社快讯下线（#14）**：`cls.cn` 旧 API 全面 404，标注弃用并改用东财全球资讯。
@@ -1453,7 +1458,8 @@ def eastmoney_stock_news(code: str, page_size: int = 20) -> list[dict]:
     d = json.loads(json_str)
 
     rows = []
-    articles = d.get("result", {}).get("cmsArticleWebOld", {}).get("list", [])
+    # 东财实际返回里 result.cmsArticleWebOld 直接就是文章列表（非 {list:[...]} 嵌套）
+    articles = d.get("result", {}).get("cmsArticleWebOld", []) or []
     for a in articles:
         rows.append({
             "title": re.sub(r'<[^>]+>', '', a.get("title", "")),
@@ -1629,12 +1635,15 @@ print(f"{info['name']}({info['code']}): 行业={info['industry']} 总市值={inf
 ```python
 import requests
 
-def sina_financial_report(code: str, report_type: str = "lrb") -> list[dict]:
+def sina_financial_report(code: str, report_type: str = "lrb", num: int = 8) -> list[dict]:
     """
     新浪财报三表。
     code: 6位代码
     report_type: "fzb"(资产负债表) / "lrb"(利润表) / "llb"(现金流量表)
-    返回: 按报告期排序的财务数据列表
+    num: 取最近 N 期（默认 8 期）
+    返回: 按报告期倒序的记录列表，每期一条 dict：
+          {"报告期": "2026-03-31", "<科目>": "<值>", "<科目>_同比": <同比>, ...}
+          （item_value 为新浪原始字符串数值，仅在有同比时附 "_同比" 键）
     """
     prefix = "sh" if code.startswith("6") else "sz"
     paper_code = f"{prefix}{code}"
@@ -1644,24 +1653,33 @@ def sina_financial_report(code: str, report_type: str = "lrb") -> list[dict]:
         "source": report_type,
         "type": "0",
         "page": "1",
-        "num": "20",  # 最近20期
+        "num": str(num),
     }
     headers = {"User-Agent": UA}
     r = requests.get(url, params=params, headers=headers, timeout=15)
-    d = r.json()
+    # 新浪实际结构: result.data.report_list 是「按报告期(如 '20260331')为键」的 dict,
+    # 每期对象的 data 字段才是行项列表 [{item_title, item_value, item_tongbi}]。
+    report_list = r.json().get("result", {}).get("data", {}).get("report_list", {}) or {}
 
     rows = []
-    result = d.get("result", {}).get("data", {})
-    # 结构: {report_type: [{...}, ...]}
-    items = result.get(report_type, [])
-    if isinstance(items, list):
-        rows = items
+    for period in sorted(report_list.keys(), reverse=True)[:num]:
+        obj = report_list[period]
+        rec = {"报告期": f"{period[:4]}-{period[4:6]}-{period[6:8]}"}
+        for it in obj.get("data", []) or []:
+            title = it.get("item_title", "")
+            if not title or it.get("item_value") is None:
+                continue
+            rec[title] = it.get("item_value")
+            tongbi = it.get("item_tongbi")
+            if tongbi not in (None, ""):
+                rec[title + "_同比"] = tongbi
+        rows.append(rec)
     return rows
 
 # 用法: 利润表
 lrb = sina_financial_report("600519", "lrb")
 for item in lrb[:3]:
-    print(f"报告期: {item.get('报告日', '')} 净利润: {item.get('净利润', '')}")
+    print(f"报告期: {item.get('报告期', '')} 净利润: {item.get('净利润', '')}")
 
 # 用法: 资产负债表
 fzb = sina_financial_report("600519", "fzb")
