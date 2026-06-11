@@ -1,6 +1,5 @@
-akshare
+fastapi
+uvicorn
 pandas
 numpy
 requests
-fastapi
-uvicorn
